@@ -19,13 +19,7 @@ const client = new Client({
 
 const command = new SlashCommandBuilder()
   .setName("pegar-emojis")
-  .setDescription("Gera um ZIP com todos os emojis do servidor selecionado.")
-  .addStringOption(option =>
-    option
-      .setName("server_id")
-      .setDescription("ID do servidor onde estão os emojis")
-      .setRequired(true)
-  );
+  .setDescription("Gera um ZIP com todos os emojis desta aplicação.");
 
 async function registerCommand() {
   const rest = new REST({ version: "10" }).setToken(token);
@@ -35,36 +29,39 @@ async function registerCommand() {
   console.log("Comando /pegar-emojis registrado.");
 }
 
-async function createEmojiZip(guild) {
-  const emojis = await guild.emojis.fetch();
+async function createEmojiZip() {
+  const response = await fetch(`https://discord.com/api/v10/applications/${clientId}/emojis`, {
+    headers: { Authorization: `Bot ${token}` }
+  });
 
-  if (!emojis.size) {
-    throw new Error("Esse servidor não possui emojis que o bot consiga acessar.");
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Discord API respondeu ${response.status}. ${body}`);
   }
 
-  const filePath = path.join("/tmp", `astral-emojis-${guild.id}.zip`);
+  const data = await response.json();
+  const emojis = Array.isArray(data.items) ? data.items : [];
+
+  if (!emojis.length) {
+    throw new Error("Esta aplicação não possui emojis.");
+  }
+
+  const filePath = path.join("/tmp", `astral-emojis-${clientId}.zip`);
   const output = fs.createWriteStream(filePath);
   const archive = archiver("zip", { zlib: { level: 9 } });
 
   return new Promise((resolve, reject) => {
-    output.on("close", () => resolve({ filePath, count: emojis.size }));
+    output.on("close", () => resolve({ filePath, count: emojis.length }));
     output.on("error", reject);
     archive.on("error", reject);
-
     archive.pipe(output);
 
-    for (const emoji of emojis.values()) {
+    Promise.all(emojis.map(async emoji => {
       const extension = emoji.animated ? "gif" : "png";
       const url = `https://cdn.discordapp.com/emojis/${emoji.id}.${extension}?size=4096&quality=lossless`;
-      archive.append(require("https").get ? Buffer.alloc(0) : Buffer.alloc(0), { name: "placeholder" });
-    }
-
-    Promise.all([...emojis.values()].map(async emoji => {
-      const extension = emoji.animated ? "gif" : "png";
-      const url = `https://cdn.discordapp.com/emojis/${emoji.id}.${extension}?size=4096&quality=lossless`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`Falha ao baixar ${emoji.name || emoji.id}.`);
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const emojiResponse = await fetch(url);
+      if (!emojiResponse.ok) throw new Error(`Falha ao baixar ${emoji.name || emoji.id}.`);
+      const buffer = Buffer.from(await emojiResponse.arrayBuffer());
       archive.append(buffer, { name: `${emoji.name || emoji.id}.${extension}` });
     }))
       .then(() => archive.finalize())
@@ -82,12 +79,7 @@ client.on("interactionCreate", async interaction => {
   await interaction.deferReply({ ephemeral: true });
 
   try {
-    const serverId = interaction.options.getString("server_id", true);
-    const guild = await client.guilds.fetch(serverId);
-
-    if (!guild) throw new Error("Servidor não encontrado.");
-
-    const result = await createEmojiZip(guild);
+    const result = await createEmojiZip();
 
     await interaction.editReply({
       content: `✅ ZIP criado com **${result.count} emojis**.`,
@@ -98,7 +90,7 @@ client.on("interactionCreate", async interaction => {
   } catch (error) {
     console.error(error);
     await interaction.editReply({
-      content: `❌ Não consegui acessar os emojis desse servidor. Verifique se este bot está nele e tente novamente.\\n\\n${error.message}`
+      content: `❌ Não consegui acessar os emojis desta aplicação.\\n\\n${error.message}`
     });
   }
 });
